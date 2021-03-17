@@ -1,3 +1,5 @@
+## Calculate the ratio of RFP+ over RFP- cells within each MetaCell
+
 library(metacell)
 library(dplyr)
 library(tidyverse)

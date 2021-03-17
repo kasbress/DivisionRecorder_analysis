@@ -1,3 +1,6 @@
+## Perform DE analysis between MetaCells
+
+
 library(metacell)
 library(Seurat)
 library(ggplot2)
@@ -59,7 +62,7 @@ ggplot(to_plot, aes( y= avg_logFC , x=Average, color = sig, label = Row.names) )
   theme(legend.position = "none", plot.title = element_text(hjust = 0.5))+
   ylim(-1,1)
 
-ggsave(filename = "./plots/DE on metacells/MC13vMC20.pdf",device = "pdf", width = 6, height = 4,useDingbats=FALSE )
+ggsave(filename = "./MC13vMC20.pdf",device = "pdf", width = 6, height = 4,useDingbats=FALSE )
 
 write.table(x = markers, file = "./misc_data/MC13vMC20.txt", sep = "\t")
 

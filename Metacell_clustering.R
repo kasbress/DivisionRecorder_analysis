@@ -1,3 +1,5 @@
+### MetaCell clustering of scRNAseq data stored in a seurat object
+
 library(metacell)
 library(Seurat)
 library(viridis)

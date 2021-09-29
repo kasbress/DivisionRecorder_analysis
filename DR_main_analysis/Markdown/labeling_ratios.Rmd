@@ -1,0 +1,206 @@
+---
+title: "Identification of low-division and high-division Tcm"
+author: "Kaspar Bresser"
+date: "29/07/2021"
+output: 
+  github_document:
+    toc: TRUE
+  html_document: 
+    theme: simplex
+    highlight: pygments
+    code_folding: show
+    self_contained: TRUE
+    toc: yes
+    toc_float:
+      collapsed: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      message=FALSE,
+                      autodep  = TRUE,
+                      cache = FALSE,
+                      fig.width = 5,
+                      fig.asp = 0.618,
+                      fig.align = "center")
+
+```
+
+
+In the manuscript we use the DivisionRecorder to assess division history within each MetaCell of our scRNAseq dataset. Below we describe the processing steps performed to calculate the ratio's from the scRNAseq data, starting from the metacell and mat objects generated during the MetaCell analysis.
+
+We'll start with importing the libraries used for plotting ect, and import the data that we'll use. To import the mat and mc objects with the metacell package, we'll have to point the package to the directory where the objects are stored. 
+
+
+```{r loading}
+library(here)
+library(tidyverse)
+library(metacell)
+library(ggpubr)
+library(rstatix)
+
+# point the metacell package to the data directory
+scdb_init(here("Data"), force_reinit=T)
+
+# import metacell objects
+mc <- scdb_mc("DivRecMEM_MC")
+clean.mat <- scdb_mat("DivRecMEM_clean")
+```
+
+# Prepare data
+
+Lets start with getting all the data we need, starting with extracting the cellcodes plus hashtag identities from the mat object.
+
+```{r get_hashtags, echo=TRUE}
+clean.mat@cell_metadata %>% 
+  rownames_to_column("cellcode") %>% 
+  as_tibble %>% 
+  dplyr::select(hash.ID, cellcode) %>% 
+  mutate(hash.ID = as.character(hash.ID)) -> hashes
+
+hashes
+```
+
+Next we'll retrieve the metacell-cellcode pairing information from the mc object, using `dplyr::enframe` to get a dataframe, and subsequently join it to the hashtag table. 
+
+```{r get_MCs, echo=TRUE}
+enframe(mc@mc, "cellcode", "MC") %>% 
+  left_join(hashes) %>% 
+  mutate(MC = factor(MC)) -> hashes.MCs
+
+hashes.MCs
+```
+
+# Calculating DR<sup>RFP</sup> over DR<sup>GFP</sup> ratio's
+
+We will drill down on only on the cells that were transduced with the DivisionRecorder, so lets get those experiment labels from the hashtags.
+
+```{r get_experiments}
+hash.tags <- grep(pattern = "GFP|RFP", x = unique(hashes.MCs$hash.ID), value = T)
+
+hash.tags
+```
+
+Next we'll clean up the object, checking that there are no more cellcodes that we ignored during clustering, filtering for the cells from the DivisionRecorder experiments, and trashing any potential `NA`'s.
+
+```{r get_counts}
+hashes.MCs %>%
+  # first filter unused cells and for HTO1-4, remove NAs
+  filter(!(cellcode %in% as.character(clean.mat@ignore_cells))) %>%
+  filter(hash.ID %in% hash.tags & !is.na(MC)) %>%
+  # count MCs by HTO
+  dplyr::count(MC, hash.ID) -> counts.per.MC
+
+counts.per.MC
+```
+
+A problem we encountered during when performing the experiment that included mouse 4-7 was that DR<sup>RFP</sup> counts were very low, forcing us to pool these populations, resulting in pools of mouse 4+5 and 6+7. Using the sort counts of these DR<sup>RFP</sup> populations, we can add a correction factor that will allow us to pool the GFP populations in silico. 
+
+```{r correct_for_pooling}
+counts.per.MC %>% 
+  mutate(div.by = case_when( hash.ID == "DR5.GFP" ~ 3.4,
+                             hash.ID == "DR6.GFP" ~ 3.77, 
+                             TRUE ~ 1  ) ) %>%
+  # correct and re-name GFP samples of the same day
+  mutate(cor.count = n * div.by)%>%
+  mutate(hash.ID = fct_collapse(.$hash.ID, DR45.GFP = c("DR4.GFP","DR5.GFP"),
+                                DR67.GFP = c("DR6.GFP","DR7.GFP")  ))%>%
+  # pool the GFP samples of the same day
+  group_by(MC, hash.ID)%>%
+  summarise(cor.count = sum(cor.count)) -> counts.per.MC.corrected
+
+counts.per.MC.corrected
+```
+
+
+Now the experiments have been properly joined, we can perform the final steps. 
+Now we want to normalize our data so we can compare the different experiments (i.e Hashtags). We'll normalize each hashtag to 1000 cells. 
+Once we've done that we'll pool all RFP and GFP cells, respectively. This way we'll get 1 DR<sup>RFP</sup>/DR<sup>GFP</sup> per MetaCell
+
+```{r calc_ratios}
+counts.per.MC.corrected %>% 
+  group_by(hash.ID)%>%
+  mutate(normalized.count = (cor.count/sum(cor.count))*1000 )%>%
+  mutate(DivRec = ifelse(grepl( "RFP",hash.ID), "RFP", "GFP" )) %>% 
+  # add together per MC and GFP/RFP
+  group_by(MC, DivRec)%>%
+  summarise(normalized.count = sum(normalized.count)) %>% 
+  group_by(MC)%>%
+  summarise(lab.ratio = sum(normalized.count[DivRec == "RFP"])/normalized.count[DivRec == "GFP"])  %>% 
+  ungroup() -> lab.ratios
+
+lab.ratios
+```
+
+
+As a final touch, we'll add the MetaCell phenotype clusters to the tibble, so we can show that information in the plots.
+
+```{r add_phenotype}
+lab.ratios %>% 
+  mutate(cluster = factor(fct_collapse(.$MC,
+                                Tcm_eff = c('23','15','22','8','6','10','4','5','7','18'),
+                                Tcm_mult = c('9','1','12','13','14','16','11','2','3'),
+                                Tem = c('21','19','17','20')), 
+                          levels = c("Tem", "Tcm_eff", "Tcm_mult")  )  ) -> lab.ratios
+lab.ratios
+```
+
+# Plotting the ratios
+
+Now we can put the data in a waterfall plot
+
+```{r make_waterfall, fig.width=6, fig.height=4}
+p1 <- ggplot(lab.ratios, aes(x = fct_reorder(MC, lab.ratio), y = log2(lab.ratio), fill = cluster ))+
+  geom_bar(stat = "identity", color = "black", size = .4)+
+  geom_hline(yintercept = 0)+
+  scale_fill_manual(values = c("#C1272D","#4575B4" ,"#8AB8D7"))+
+  scale_y_continuous(limits = c(-1.5, 0.65))+
+  labs(x = "MetaCells", y = "RFP/GFP ratio (log2)")
+
+p1
+```
+
+
+Next calculate some statistics for the accompanying boxplot.
+
+```{r get_statistics}
+lab.ratios %>% 
+  t_test( lab.ratio ~ cluster, p.adjust.method = "fdr") %>% 
+  add_xy_position(x = "cluster") %>% 
+  mutate(y.position = log2(y.position)) -> stat.test
+
+stat.test
+```
+
+And make the boxplot.
+
+```{r make_boxplot, fig.asp=0.9}
+p2 <- ggplot(lab.ratios, aes(x = cluster, y = log2(lab.ratio), color = cluster ))+
+  geom_boxplot(outlier.shape = NA)+
+  scale_color_manual(values = c("#C1272D","#4575B4" ,"#8AB8D7"))+
+  geom_jitter(color = "black", width = .2)+
+  stat_pvalue_manual(data = stat.test, label = "p.adj", label.size = 4, hide.ns = T, tip.length = 0.02)+
+  scale_y_continuous(limits = c(-1.5, .65))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(x = "Phenotype cluster", y = "RFP/GFP ratio (log2)")
+p2
+```
+
+
+And finally, the for the last illustration, combine the waterfall and boxplot. 
+
+```{r final_plot, fig.width=10}
+ggarrange(plotlist = list(p1,p2), ncol =  2, widths = c(1.8,1))
+
+ggsave(here("Figs", "labeling_ratios_AllWterm.pdf"), device = "pdf", width = 8, height = 4)
+```
+
+
+Also, write out the labeling ratio's 
+
+```{r write_lab_ratios}
+write_tsv(lab.ratios, here("Output", "labeling_ratios.tsv"))
+```
+
+
+

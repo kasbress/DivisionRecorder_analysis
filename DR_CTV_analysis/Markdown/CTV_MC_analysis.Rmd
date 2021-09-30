@@ -1,0 +1,230 @@
+---
+title: "MetaCell-based analysis - CTV data"
+author: "Kaspar Bresser"
+date: "29/07/2021"
+output: 
+  github_document:
+    toc: TRUE
+  html_document: 
+    theme: simplex
+    highlight: pygments
+    code_folding: show
+    self_contained: TRUE
+    toc: yes
+    toc_float:
+      collapsed: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      message=FALSE,
+                      autodep  = TRUE,
+                      cache = FALSE,
+                      fig.width = 5,
+                      fig.asp = 0.618,
+                      fig.align = "center")
+```
+
+In the DivisionRecorder manuscript we used a CTV based approach to sort high- and low-division memory T cells. For each of these populations we had obtained duplicate cell pools. Each was hash-tagged separately, then pooled, and subsequently single-cell sequenced using the 10x approach. Below the analysis pipe-line we used for the MetaCell-based analysis. 
+
+MetaCells were generated using the MetaCell_run.R script in the Scripts folder. 
+
+First load the packages, and files that we'll be using.
+
+
+```{r loading}
+library(here)
+library(metacell)
+library(viridis)
+library(tidytext)
+library(tidyverse)
+
+# Define the folder containing the metacell data objects
+scdb_init(here("Data"), force_reinit=T) 
+
+# Import the objects
+mc <- scdb_mc("DivRecCTV_MC")
+mc2d <- scdb_mc2d("DivRecCTV_MC")
+clean.mat = scdb_mat("DivRecCTV_clean")
+```
+
+
+# Visualize MetaCells
+
+Start off with plotting the single cells, and their MetaCell identity on a 2D plane. The x and y coordinates are stored in the mc2d object.
+
+```{r check_2d}
+str(mc2d)
+```
+
+Extract the coordinates from the `sc_x` and `sc_y` slots. 
+
+And join with MetaCell identities, these are stored in the `mc` object. 
+
+```{r get_coordinates}
+mc2d@sc_x %>% 
+  enframe("cellcode", "MC_x") %>% 
+  full_join(enframe(mc2d@sc_y, "cellcode", "MC_y")) %>% 
+  left_join(enframe(mc@mc, "cellcode", "MetaCell")) -> coords
+
+coords
+```
+
+Make plot the 2d project. 
+
+```{r plot_2d}
+coords %>% 
+  ggplot( aes(MC_x, MC_y, color = as.factor(MetaCell)))+
+    geom_point(size = 1)+
+    scale_color_viridis_d()+
+    theme_classic()
+
+ggsave(here("Figs", "2d_projection_CTV.pdf"), device = "pdf", width = 7,height = 5)
+```
+
+
+# Plot MetaCell enrichment
+
+Next, make visualization to check if less or more divided cells are enriched in certain MetaCells. The sample hashtags correspond to cells that were CTV^HI^ or CTV^LO^. Extract the hashtag information from the metadata of the `mat` object and recode the identifiers to correspond to CTV^HI^ or CTV^LO^ populations. The replicates correspond to GFP^-^ (i.e. Ai9 cells) and GFP^+^ cells.
+
+
+```{r get_hashtags}
+clean.mat@cell_metadata %>% 
+  rownames_to_column("cellcode") %>% 
+  as_tibble() %>% 
+  select(cellcode, hash.ID) %>% 
+  mutate(hash.ID = fct_recode(hash.ID, 
+                              LO_GFP = "MSC15-1", 
+                              LO_Ai9 = "MSC15-2", 
+                              HI_GFP = "MSC15-3",
+                              HI_Ai9 = "MSC15-4")) -> hashtags
+hashtags
+```
+
+Now join that table with the MetaCell identities, stored in the `mc` object.
+
+
+
+```{r join_MC_hastags}
+mc@mc %>% 
+  enframe("cellcode", "MetaCell") %>% 
+  left_join(hashtags) -> mc.hashtag.table
+
+mc.hashtag.table
+```
+
+
+Now count the number of cells per MetaCell-hashtag combination, and normalize within hashtags. 
+
+
+```{r get_counts}
+mc.hashtag.table %>%
+  count(MetaCell, hash.ID)%>%
+  group_by(hash.ID)%>%
+  mutate(normalized.count = (n/sum(n))*1000 ) -> mc.hashtag.counts 
+
+mc.hashtag.counts
+```
+
+
+Next `separate` the hash.ID label into separate columns, one for CTV intensity and one for cell origin.
+
+Can then calculate the ratio between CTV^LO^ and CTV^HI^ cells, for each MetaCell and for both sample origins. 
+
+
+```{r get_ratios}
+mc.hashtag.counts %>% 
+  separate(hash.ID, into = c("CTVint", "origin")) %>% 
+  group_by(MetaCell, origin) %>% 
+  summarize(ratio = normalized.count[CTVint == "LO"] / normalized.count[CTVint == "HI"]) -> ratio.HiLo 
+
+ratio.HiLo
+```
+
+Plot the data, take the median of the two replicative cell pools to plot bars, and plot the individual measurements as dots. 
+
+
+```{r plot_ratios}
+ratio.HiLo %>% 
+  ggplot( aes( y=log2(ratio), x= as_factor(MetaCell))) + 
+    geom_bar( stat = "summary", fun = "median", color = "grey", fill = "grey", size = 0.8, width = .7)+
+    geom_point()+
+    geom_hline(yintercept = 0, linetype = "solid")+
+    geom_hline(yintercept = c(1,-1), linetype = "dashed", color = "red")+
+    theme_classic()+
+    labs(x = "MetaCell", y = "log2 ratio (Div0-2/Div5+)")
+
+ggsave(filename = here("Figs", "Hashtags_per_MC_ratio.pdf"), device = "pdf", 
+       width = 5, height = 4, useDingbats=FALSE )
+
+```
+
+# Plot top/bottom genes 
+
+Having found MetaCells that are depleted and enriched for CTV^LO^ or CTV^HI^ cells, we can next look at marker genes of these MetaCells. 
+
+Extract the log2 gene-enrichment values from the `mc` object and get the variables we're interested in (geneIDs and enrichment values from MC2, 5, 19 and 20)
+
+```{r get_lfp}
+selection.vars <- c("genes", "2", "5", "19", "20")
+
+mc@mc_fp %>% 
+  as_tibble(rownames = "genes" ) %>% 
+  mutate(across(where(is.numeric), log2)) %>% 
+  select(all_of(selection.vars)) -> lfp
+
+lfp
+```
+
+
+
+Filter the table for immune-related genes, make the columns IDs a bit tidier, and switch to long data.
+
+```{r filter_lfp}
+immune.genes <- read_rds(here("Data", "immune_genes.rds"))
+
+lfp %>% 
+  filter(genes %in% immune.genes) %>% 
+  rename_with(~paste0("MC", .x), where(is.numeric)) %>% 
+  pivot_longer(starts_with("MC"), names_to = "MetaCell", values_to = "lfp") -> lfp.long
+
+lfp.long
+
+```
+
+
+Now prepare for plotting. We'd like the top and bottom marker genes for each of these MetaCells, took top and bottom 6 here. Then reorder the gene labels, so they will appear in order in the faceted barplots. Can do this with `tidytext::reorder_within`.
+
+
+```{r prep_plot}
+lfp.long %>% 
+  group_by(MetaCell) %>% 
+  filter(dense_rank(lfp) <= 6 | dense_rank(desc(lfp)) <= 6) %>%
+  ungroup() %>% 
+  mutate(genes = reorder_within(genes, lfp, MetaCell) ) -> to.plot
+
+to.plot
+```
+
+
+And to make the plot, make 1 waterfall plot for each MetaCell. Make sure to use `tidytext::scale_x_reordered` to trim the axis labels.
+
+
+```{r waterfall_plot, fig.width=8, fig.asp=.5}
+to.plot %>% 
+  ggplot(aes(x = genes, y = lfp, fill=lfp > 0))+
+    geom_bar(stat="identity")+ 
+    theme_minimal()+
+    theme(legend.position = "none", plot.title = element_text(hjust = 0.5))+
+    scale_fill_manual(values=c("blue", "red"))+
+    scale_x_reordered()+
+    coord_flip()+
+    facet_wrap(~MetaCell, scales = "free", nrow = 1)
+
+ggsave(filename = here("Figs", "lfp_waterfalls_CTV.pdf"), device = "pdf", 
+       width = 6, height = 3, useDingbats = F)
+
+```
+
+
+

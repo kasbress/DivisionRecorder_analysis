@@ -1,0 +1,296 @@
+---
+title: "Compare modified vs unmodified memory T cells"
+author: "Kaspar Bresser"
+date: "01/09/2021"
+output: 
+  github_document:
+    toc: TRUE
+  html_document: 
+    theme: simplex
+    highlight: pygments
+    code_folding: show
+    self_contained: TRUE
+    toc: yes
+    toc_float:
+      collapsed: no
+
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      message=FALSE,
+                      autodep  = TRUE,
+                      cache = FALSE,
+                      fig.width = 5,
+                      fig.asp = 0.618,
+                      fig.align = "center")
+
+```
+
+# Load packages and data
+
+In the DivisionRecorder manuscript we performed single-cell sequencing on CD8+ memory T cells generated from cells that were either (1) modified with the DivisionRecorder or (2) not modified and directly transferred from the donor mice. 
+
+In this analysis we'll compare the relative amount of cells contributed to each transcriptional state (i.e. MetaCell) by cells originating from either modified or unmodified cells.
+
+Start off with loading in the required packages and the data used in the analysis. 
+
+We'll need the metacell object (containing cellcode-MC pairs), and the mat object (generated during the metacell pipeline, will contain hashtag identities). These can be obtained from [GEO](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE169154)
+
+```{r loading}
+library(here)
+library(tidyverse)
+library(metacell)
+library(rstatix)
+library(ggpubr)
+library(RColorBrewer)
+
+# point the metacell package to the data directory
+scdb_init(here("Data"), force_reinit=T)
+
+# import metacell objects
+mc <- scdb_mc("DivRecMEM_MC")
+clean_mat <- scdb_mat("DivRecMEM_clean")
+
+```
+
+# Get and tidy count data
+
+We can get the hashtag info from the mat objected generated during the metacell pipeline. This is stored in the metadata slot.
+
+```{r get_hashIDs}
+colnames(clean_mat@cell_metadata)
+
+clean_mat@cell_metadata %>% 
+  rownames_to_column("cellcode") %>% 
+  dplyr::select(hash.ID, cellcode) %>% 
+  mutate(hash.ID = as.character(hash.ID)) %>% 
+  as_tibble() -> cells.df
+
+cells.df
+```
+
+Then we'll combine the cellcode, hashID pairs with the metacell-IDs. We're only interested in cells that were assigned MetaCells.
+
+```{r combine_hash_MC}
+enframe(mc@mc, "cellcode", "MC") %>% 
+  left_join(cells.df) %>% 
+  mutate(MC = factor(MC)) -> cells.df
+
+summary.data <- cells.df
+
+cells.df
+```
+
+These tibble now contains cells from both scRNAseq experiments performed in the manuscript, but we only took along unmodified T cells in the second experiment, so we'll focus on that sequence run only.
+
+Unmodified T cell samples are labeled as "Naive", modified are labeled DR(4-7). Also make sure there are no `NA`s stuck in the data somewhere. 
+
+```{r extract_exp2}
+(hash.tags <- grep(pattern = "DR[4|5|6|7]\\.GFP|Naive", x = unique(cells.df$hash.ID), value = T))
+
+cells.df %>%
+  filter(hash.ID %in% hash.tags & !is.na(MC)) -> cells.df
+
+cells.df
+```
+
+Next, we can count the cells for each MC, hashID combination. And calculate a normalized count by dividing each count by the total count within each hashID.
+
+```{r count_cells}
+cells.df %>% 
+  dplyr::count(MC, hash.ID) %>%
+  group_by(hash.ID)%>%
+  mutate(normalized.count = (n/sum(n))*1000 ) %>%
+  ungroup() -> cell.counts
+
+cell.counts
+```
+
+Finally we'll add the group labels to the tibble. We'll add global phenotype (i.e. Tcm or Tem), sub-cluster (i.e. Tcm-eff, Tcm-mult, Tem), and sample origin (i.e. modified and unmodified)
+
+```{r group_labels}
+cell.counts %>% 
+  mutate(cluster = fct_collapse(.$MC,
+                                eff = c('23','15','22','8','6','10','4','5','7','18'),
+                                mult = c('9','1','12','13','14','16','11','2','3'),
+                                term = c('21','19','17','20')),
+         phenotype = fct_collapse(.$MC,
+                                TCM = c('23','15','22','8','6','10','4','5','7','18','9','1','12','13','14','16','11','2','3'),
+                                TEM = c('21','19','17','20')), 
+         origin = fct_collapse(.$hash.ID,
+                              unmodified = c('Naive1', 'Naive2', 'Naive3', 'Naive4'),
+                              DR.modified = c('DR4.GFP','DR5.GFP','DR6.GFP','DR7.GFP'))  ) -> cell.counts
+cell.counts
+```
+
+
+# experiment summary
+
+```{r exp_summary, fig.width=8, fig.asp=.5}
+summary.data %>% 
+  mutate(hash.ID = as.factor(hash.ID)) %>% 
+  mutate(mouseID = fct_recode(hash.ID,
+                              M1.GFP= "DR1.GFP", 
+                              M1.RFP = "DR1.RFP",
+                              M2.GFP = "DR2.GFP",
+                              M2.RFP = "DR2.RFP", 
+                              M3.GFP = "DR3.GFP",
+                              M3.RFP = "DR3.RFP",
+                              M4.GFP = "DR4.GFP", 
+                              `M4+5.RFP` = "DR45.RFP",
+                              M5.GFP = "DR5.GFP", 
+                              M6.GFP = "DR6.GFP",
+                              M7.GFP = "DR7.GFP", 
+                              `M6+7.RFP` = "DR67.RFP",
+                              M8 = "Naive1",
+                              M9 = "Naive2",
+                              M10 = "Naive3", 
+                              M11 = "Naive4")) -> summary.data
+
+
+summary.data %>% 
+  ggplot(aes(MC))+
+  geom_bar( fill = "lightgrey", color = "black" )+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+summary.data %>% 
+  ggplot(aes(mouseID))+
+  geom_bar( fill = "lightgrey", color = "black" )+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+summary.data %>% 
+  ggplot(aes(MC, fill = mouseID ))+
+  geom_bar(position = "fill", color = "black" )+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+summary.data %>% 
+  filter(!str_detect(hash.ID, "Naive")) %>% 
+  mutate(DR = case_when(str_detect(hash.ID, "GFP") ~ "GFP",
+                        TRUE ~ "RFP")) %>% 
+  ggplot(aes( x = MC, fill = DR ))+
+  geom_bar(position = "fill",color = "black" )+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+summary.data %>% 
+  count(mouseID, MC) %>% 
+  write_tsv(here("Output", "Ext_Dat_Fig_2.tsv"))
+```
+
+
+
+
+# Compare counts Tcm/Tem
+
+Lets compare the normalized counts of Tcm and Tem between modified and unmodified T cells.
+
+First get summed counts for each sample (hashID).
+
+
+```{r counts_Tcm_Tem}
+cell.counts %>% 
+  group_by(hash.ID, phenotype, origin) %>%  
+  summarise(summed.count = sum(normalized.count)) %>% 
+  ungroup() -> phenotype.counts
+
+phenotype.counts
+
+write_tsv(phenotype.counts, here("Output", "Ext_Dat_Fig_3d.tsv"))
+```
+
+Next we'll calculate some statistics, used multiple T tests, followed by bonferonni correction here.
+
+Made use of the `add_xy_position` helper function from `rstatix` to add the P values to the plot properly.
+
+```{r stats_Tcm_Tem}
+phenotype.counts %>% 
+  group_by(phenotype) %>% 
+  t_test(summed.count ~ origin ) %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance("p.adj") %>% 
+  add_xy_position(fun = "mean_sd", x = "phenotype", dodge = 0.9) %>% 
+  mutate(p.adj = round(p.adj, 4)) -> stat.test
+stat.test
+```
+
+And now for the plot. First, retrieve some colors to use. 
+
+Use `geom_bar` to plot the group means, and `stat_summary` to add the standard deviation. Also add the individual data points, and use `stat_pvalue_manual` from `ggpubr` to add the P values.
+
+```{r plot_Tcm_Tem, fig.asp=0.8}
+cols <- c(brewer.pal(8, "Blues")[5:8], brewer.pal(8, "Reds")[5:8])
+
+ggplot(phenotype.counts, aes(x = phenotype, y = summed.count) )+
+  geom_bar( stat = "summary", fun = "mean", position = "dodge", color = "black", aes(fill = origin))+
+  scale_fill_manual(values= cols[c(3,7)] )+
+  stat_summary(geom = "errorbar", fun = mean,
+               fun.min = function(x) mean(x), 
+               fun.max = function(x) mean(x) + sd(x), 
+               width = 0.4, position = position_dodge(width = 0.9), aes(group = origin) )+
+  labs(x = "Phenotype", y = "Normalized cell count")+
+  geom_jitter( position = position_dodge(width = 0.9) ,aes(group = origin))+
+  stat_pvalue_manual(data = stat.test,  label = "p.adj", tip.length = 0.01,hide.ns = TRUE, label.size = 4 )
+
+ggsave( here("Figs","GroupedBarchart_TCM_TEM.pdf"), width = 4, height = 4)
+```
+
+
+# Compare counts within Tcm
+
+Next we'll compare counts between the MetaCells that make up the Tcm pool, which is the population we're mainly interested in. 
+
+To make a nice comparison we'll first filter on Tcm, and then re-normalize within hashID's to really look at relative sizes within the Tcm pool.
+
+```{r filter_Tcm}
+cell.counts %>% 
+  filter(phenotype == "TCM") %>% 
+  # MC now contains empty levels, lets drop those
+  mutate(MC = fct_drop(MC)) %>% 
+  group_by(hash.ID) %>% 
+  mutate(norm.norm.counts = (normalized.count/sum(normalized.count))*1000 ) -> Tcm.counts
+
+Tcm.counts
+
+write_tsv(Tcm.counts, here("Output", "Ext_Dat_Fig_3e.tsv"))
+```
+
+
+Calculate some statistics, used multiple T tests, followed by bonferonni correction here.
+
+Made use of the `add_xy_position` helper function from `rstatix` to add the P values to the plot properly.
+
+
+```{r stats_Tcm}
+Tcm.counts %>% 
+  group_by(MC) %>% 
+  t_test(norm.norm.counts ~ origin ) %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance("p.adj") %>%
+  add_xy_position(fun = "mean_sd", x = "MC", dodge = 0.9) %>% 
+  mutate(p.adj = round(p.adj, 2)) -> stat.test
+
+stat.test
+```
+
+
+Use `geom_bar` to plot the group means, and `stat_summary` to add the standard deviation. Also add the individual data points, and use `stat_pvalue_manual` from `ggpubr` to add the P values.
+
+```{r plot_Tcm, fig.width=8}
+ggplot(Tcm.counts,  aes(x = factor(MC, levels = unique(MC)), y = norm.norm.counts) )+
+  geom_bar( stat = "summary", fun = "mean", position = "dodge", color = "black", aes(fill = origin))+
+  scale_fill_manual(values= cols[c(3,7)] )+
+  stat_summary(geom = "errorbar", fun = mean,
+               fun.min = function(x) mean(x), 
+               fun.max = function(x) mean(x) + sd(x), 
+               width = 0.4, position = position_dodge(width = 0.9), aes(group = origin) )+
+  labs(x = "Metacell", y = "Normalized cell count")+
+  geom_jitter( position = position_dodge(width = 0.9), aes(group = origin))+
+  stat_pvalue_manual(data = stat.test,  label = "p.adj", tip.length = 0.01,hide.ns = F, label.size = 4 )
+
+ggsave(here("Figs", "GroupedBarchart_TCM_MCs.pdf"), width = 10, height = 4)
+```
+
+
+
+

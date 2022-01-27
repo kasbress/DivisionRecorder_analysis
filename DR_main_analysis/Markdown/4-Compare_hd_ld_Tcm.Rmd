@@ -1,0 +1,658 @@
+---
+title: "Comparison of low-division and high-division Tcm"
+author: "Kaspar Bresser"
+date: "29/07/2021"
+output: 
+  github_document:
+    toc: TRUE
+  html_document: 
+    theme: simplex
+    highlight: pygments
+    code_folding: show
+    self_contained: TRUE
+    toc: yes
+    toc_float:
+      collapsed: no
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      message=FALSE,
+                      autodep  = TRUE,
+                      cache = FALSE,
+                      fig.width = 5,
+                      fig.asp = 0.618,
+                      fig.align = "center")
+
+```
+
+
+Having identified low-division and high-division MetaCells in the scRNAseq dataset, we used these identifiers to look into transcriptional differences linked to division history
+
+We'll be doing a whole bunch of analysis and visualizations, lets import all packages needed to facilitate this.
+
+Import the mat (containing all cell-metadata) and mc (containing cellcode-MC pairs, plus gene-enrichment values) objects.
+
+```{r loading}
+library(here)
+library(tidyverse)
+library(metacell)
+library(Seurat)
+library(rstatix)
+library(tidytext)
+library(limma)
+library(ggrepel)
+library(gghighlight)
+library(pheatmap)
+library(fgsea)
+library(msigdbr)
+library(ggpubr)
+
+# point the metacell package to the data directory
+scdb_init(here("Data"), force_reinit=T)
+
+# import metacell objects
+mc <- scdb_mc("DivRecMEM_MC")
+clean.mat <- scdb_mat("DivRecMEM_clean")
+
+lfp <- log2(mc@mc_fp)
+```
+
+
+# First glimpse of marker genes
+
+## Set immunne-gene list
+
+For some of the analysis we focused specifically on genes that are known, or likely, to have a function in immune regulation. The list was compiled mostly from databases such as GO and KEGG, and finalized manually. The list is by no means exhaustive or absolute, but allows us to focus a bit more on familiar genes and networks, nicely supplementing the unbiased analysis.
+
+Made use of a series of regular expressions to extract genes from the lfp object
+
+```{r get_imm_genes}
+T.cell.marks <- grep(pattern = "Sell$|Ltb|Tox|Ccr\\d+$|Cxcr\\d+$|Cd\\d+|Xcl1|Ifng|Prf1|Gzm|^Il\\d+|^Il\\d+r|Tnf|^Jak\\d+$|Itg|Ly\\d+|Tlr\\d+|Klr", 
+                     x = row.names(lfp), value = T)
+more <- grep(pattern = "Havcr2|Lag3|Cx3cr1|Pdcd1|^Nr4a|Ctla|Havcr2|Serpin|P2rx|Traf\\d+$|Gimap|Bcl\\d+|Lgals\\d+$|Bcl2|Cd\\d+$|Fbxo\\d+$|Lat$|Kdelr|Prr7|Tgf|Fas$|Fasl$|S100a|Clec", 
+             x = row.names(lfp), value = T)
+TF <- grep(pattern = "Id\\d+|Tcf\\d+|Foxo\\d+|Dnmt1|Ezh2|Bach2|Myb|Zeb\\d+|Prdm\\d+$|Klf\\d+|Sox\\d+$|Cd\\d+$|Foxp\\d+|Gata\\d+|Socs\\d+|^Stat\\d+$|Eomes|Tbx21|Icos|Jun|Runx", 
+           x = row.names(lfp), value = T)
+add <- grep(pattern = "S1pr|^Jak|^Tlr", 
+            x = row.names(lfp), value = T)
+imm.genes <- unique(c(T.cell.marks, more, TF, add))
+
+head(imm.genes, 25)
+
+write_rds(imm.genes, here("Output", "imm_genes.rds"))
+```
+
+
+## Waterfalls marker genes
+
+Using the immune gene list, we can have a look at the marker genes in each low-division and high-division MetaCell.
+
+We'll prep the data a bit, taking the lfp dataframe (genes are rows, MetaCells are columns) and selecting the ld-Tcm (2, 11, 14) and hd-Tcm (6, 8, 18) MetaCells, filtering for immune genes. Then pivot to long format, and set the factor levels of the MC variable to the order that we'd like to use for plotting later.
+
+```{r filter_lfp}
+as.data.frame(lfp) %>% 
+  select(one_of(c('2','11','14', '6','8','18'))) %>% 
+  rownames_to_column("genes") %>%
+  filter(genes %in% imm.genes) %>% 
+  pivot_longer(cols = -genes, names_to = "MC", values_to =  "lfp") %>%
+  mutate(MC = factor(MC, levels =c('2','11','14', '6','8','18'))) -> filtered.lfp
+
+filtered.lfp
+```
+
+
+For the plot we'll show the top and bottom 5 genes of each MC. We can filter on those using the `dplyr::dense_rank`.
+
+Finally, used `tidytext::reorder_within` to properly order the gene factor-levels by enrichment-value within each MetaCell.
+
+First write out the data, then create the reordered tibble.
+
+
+```{r to_long_format}
+filtered.lfp %>% 
+  group_by(MC) %>% 
+  filter(dense_rank(lfp) <= 5 | dense_rank(desc(lfp)) <= 5) %>%
+  write_tsv(here("Output", "Ext_Dat_Fig_4b.tsv"))
+
+filtered.lfp %>% 
+  group_by(MC) %>% 
+  filter(dense_rank(lfp) <= 5 | dense_rank(desc(lfp)) <= 5) %>% #get top and bottom 5
+  ungroup() %>% 
+  mutate(genes = reorder_within(genes, lfp, MC) ) -> filtered.lfp
+
+filtered.lfp
+```
+
+
+Now we can make the plot. Be sure to include `scale_x_reordered` to get the gene names as labels properly. 
+
+```{r waterfall_markers, fig.asp=.9}
+ggplot(filtered.lfp, aes(x = genes, y = lfp, fill = lfp > 0))+
+  geom_bar(stat="identity")+ 
+  theme_minimal()+
+  theme(legend.position = "none", plot.title = element_text(hjust = 0.5))+
+  scale_fill_manual(values=c("blue", "red"))+
+  scale_x_reordered()+
+  coord_flip()+
+  facet_wrap(~MC, scales = "free", nrow = 2)
+
+ggsave(filename = here("Figs", "Waterfall_Marks.pdf"), device = "pdf", width = 5, height = 4.5 ,useDingbats = F)
+```
+
+
+## Heatmaps gene-groups
+
+Beside looking at marker genes, we can inspect the enrichment of a few manually picked gene-sets.
+
+### Multipotency-related
+
+```{r multipotency}
+select.genes <- c("Myb", "Tcf7","Bcl11b", "Lef1","Ets1", "Runx1", "Klf3", "Id3", "Zeb1", "Eomes",'Bcl6', "Foxo1")
+
+as.data.frame(lfp) %>% 
+  dplyr::select(one_of(c('2','14','11','18','8','6'))) %>% 
+  rownames_to_column("genes") %>%
+  dplyr::filter(genes %in% select.genes) %>% 
+  column_to_rownames("genes") %>% 
+  as.matrix() %>% 
+  pheatmap(scale = "row",breaks = seq(-1.5,1.5,by=0.03), clustering_distance_rows = "euclidean", 
+           border_color = NA, cutree_cols = 2, show_rownames = T, cluster_cols = F) -> hm
+
+pdf(file = here("Figs", "Heatmap_multipo.pdf"), width = 3, height = length(select.genes)/3, title = "multipo" )
+hm
+dev.off()
+
+```
+
+### Survival-related
+
+```{r survival, fig.asp=0.8}
+select.genes <- c('Gimap4', 'Gimap5', 'Gimap5', 'Gimap7', 'Gimap6', 
+                  'Bcl2', 'Bcl11a', 'Traf5',  "Mcl1", "Il7r", "Dedd", 
+                  'Birc7','Xiap','Birc6','Birc2','Birc3',"Espl1", "Traf2")
+
+as.data.frame(lfp) %>% 
+  dplyr::select(one_of(c('2','14','11','18','8','6'))) %>% 
+  rownames_to_column("genes") %>%
+  dplyr::filter(genes %in% select.genes) %>% 
+  column_to_rownames("genes") %>% 
+  as.matrix() %>% 
+  pheatmap(scale = "row",breaks = seq(-1.5,1.5,by=0.03), clustering_distance_rows = "euclidean", 
+           border_color = NA, cutree_cols = 2, show_rownames = T, cluster_cols = F) -> hm
+
+pdf(file = here("Figs", "Heatmap_survival.pdf"), width = 3, height = length(select.genes)/3, title = "multipo" )
+hm
+dev.off()
+
+```
+
+### Cytotoxicity-related
+
+```{r cytotoxicity, fig.asp=0.8}
+select.genes <- c('Gzma', 'Gzmb','Gzmm', 'Lamp1', 'Lamp2', 
+                  'Raet1e', 'Prf1', 'Ctsc', 'Ctsh', 'Ifng',
+                  'Ctsd',"Nkg7", "Ctsw", 'Ctsc',"Ctsl","Slamf7", "Cst7")
+
+as.data.frame(lfp) %>% 
+  dplyr::select(one_of(c('2','14','11','18','8','6'))) %>% 
+  rownames_to_column("genes") %>%
+  dplyr::filter(genes %in% select.genes) %>% 
+  column_to_rownames("genes") %>% 
+  as.matrix() %>% 
+  pheatmap(scale = "row",breaks = seq(-1.5,1.5,by=0.03), clustering_distance_rows = "euclidean", 
+           border_color = NA, cutree_cols = 2, show_rownames = T, cluster_cols = F) -> hm
+
+pdf(file = here("Figs", "Heatmap_cytox.pdf"), width = 3, height = length(select.genes)/3, title = "multipo" )
+hm
+dev.off()
+
+```
+
+### Inhibitory-related
+
+```{r inhibitory, fig.asp=0.5}
+select.genes <- c("Lag3", "Pdcd1", 'Havcr2', 'Cd244', 'Ctla4', 'Btla', 'Cd160', 'Tox')
+
+as.data.frame(lfp) %>% 
+  dplyr::select(one_of(c('2','14','11','18','8','6'))) %>% 
+  rownames_to_column("genes") %>%
+  dplyr::filter(genes %in% select.genes) %>% 
+  column_to_rownames("genes") %>% 
+  as.matrix() %>% 
+  pheatmap(scale = "row",breaks = seq(-1.5,1.5,by=0.03), clustering_distance_rows = "euclidean", 
+           border_color = NA, cutree_cols = 2, show_rownames = T, cluster_cols = F) -> hm
+
+pdf(file = here("Figs", "Heatmap_inhib.pdf"), width = 3, height = length(select.genes)/3, title = "multipo" )
+hm
+dev.off()
+
+```
+
+
+# DGE analysis
+
+From the above analysis, we concluded that low-division Tcm appear less differentiated compared to high-division Tcm. To verify this in a more unbiased manner, we can perform a differential gene-expression analysis. 
+
+## Differential expression testing
+
+We'll test for differentially expressed genes using Seurat. Import the Seurat-object, create a factor defining the groups we want to compare, and add it to the Seurat-object as metadata.
+
+```{r get_seurat}
+seurat.memory <- readRDS(here("Data", "seurat_object_all_exps.rds"))
+
+mc@mc %>% 
+  as.factor %>% 
+  fct_collapse(Tcm.high = c('18','8','6'),
+               Tcm.low = c('2','11','14')) -> Tcm.highVlow
+
+
+seurat.memory <- AddMetaData(object = seurat.memory, metadata = Tcm.highVlow, col.name = "Tcm.highVlow")
+
+summary(seurat.memory@meta.data$Tcm.highVlow)
+```
+
+
+Ready for differential-expression testing! Used the wilcox-test implemented in Seurat. 
+
+
+```{r DE_test, cache=TRUE}
+# Set Identity for DE-analysis
+Idents(seurat.memory) <- "Tcm.highVlow"
+
+# Perform DE-analysis
+marks <- FindMarkers(object = seurat.memory , ident.1 = 'Tcm.low', ident.2 = 'Tcm.high', 
+                     logfc.threshold = 0, test.use = "wilcox", min.pct = 0.1, slot = "counts")
+
+marks %>% 
+  rownames_to_column("genes") %>% 
+  as_tibble() -> marks
+
+marks
+
+write_tsv(marks, here("Output", "markers_top3VSbot3.tsv"))
+write_tsv(marks, here("Output", "Ext_Dat_Fig_4d"))
+```
+
+## Volcano plot
+
+To visualize the results of the DE test, we'll use a volcano plot. Need to prep the data a bit; Will add fold-change and significance thresholds for highlighting genes in the plot (manually set the levels of the significance factor to control plotting order).
+
+Also add some genes of interest to label in the plot.
+
+```{r prep_volcano}
+marks %>% 
+  mutate(sig = case_when((avg_log2FC < -0.1 | avg_log2FC > 0.1) & p_val_adj < 0.05 ~ "sig", 
+                         TRUE ~ "ns") )%>% 
+  mutate(sig = factor(sig, levels = c("sig", "ns"))) %>% 
+  # select a couple of informative genes for highlighting and labeling
+  mutate(to.label = genes %in% c("Il7r", "Tcf7", "Ltb", "Klf3", "Vim", "Lgals1", 
+                                 "S100a4", "Nkg7","S100a6","Crip1", "Gzmb", "Ccr2")) -> to.plot
+
+to.plot
+```
+
+And this table can be used to make to plot. Used `geom_text_repel` from the `ggrepel` package to label the genes. 
+
+```{r plot_volcano, fig.asp=.9, fig.height=5}
+ggplot(to.plot, aes( y= log10(p_val) , x=avg_log2FC, color = sig, label = genes) ) + 
+  geom_point()+
+  scale_y_reverse()+
+  scale_color_manual(values=c("red", "darkgrey"))+
+  geom_text_repel(data = subset(to.plot, to.label == TRUE ),box.padding = 1.4, max.overlaps = 25 )+
+  labs(title = "", x = "log2 fold change", y = "log10 P value")+
+  theme(legend.position = "none", plot.title = element_text(hjust = 0.5))+
+  geom_hline(yintercept = log10(1.578786e-06), linetype = "dotted")+
+  geom_vline(xintercept = c(0.1, -0.1), linetype = "dotted")+
+  xlim(-.75,.4)
+
+ggsave(filename = here("Figs", "DE_analysis_Volcano.pdf"), device = "pdf", width = 4.2, height = 6, useDingbats = F)
+
+```
+
+## Heatmaps Immune-genes
+
+We can again use our immune gene list to generate some focused heatmaps zooming in on our DE genes. 
+
+```{r select_genes}
+marks %>% 
+  filter(p_val < 0.05 & (avg_log2FC) > 0.05) %>% 
+  filter(genes %in% imm.genes) %>% 
+  slice_max(avg_log2FC, n = 20) %>% 
+  pull(genes) -> gs.up
+
+gs.up
+
+marks %>% 
+  filter(p_val < 0.05 & (avg_log2FC) < -0.05) %>% 
+  filter(genes %in% imm.genes) %>%
+  slice_min(avg_log2FC, n = 20) %>% 
+  pull(genes) -> gs.down
+
+gs.down
+```
+
+### Upregulated ld-Tcm
+
+```{r heatmap_ld, fig.asp=.8}
+as.data.frame(lfp) %>% 
+  dplyr::select(one_of(c('2','14','11','18','8','6'))) %>% 
+  rownames_to_column("genes") %>%
+  filter(genes %in% gs.up) %>% 
+  column_to_rownames("genes") %>% 
+  as.matrix() %>% 
+  pheatmap(scale = "row",breaks = seq(-1.5,1.5,by=0.03), clustering_distance_rows = "euclidean", 
+           border_color = NA, cutree_cols = 2, show_rownames = T, cluster_cols = F) -> hm
+
+hm
+
+pdf(here("Figs", "heatmap_ld_genes.pdf"), height = 5, width = 4)
+hm
+dev.off()
+```
+
+### Upregulated hd-Tcm
+
+```{r heatmap_hd, fig.asp=.8}
+as.data.frame(lfp) %>% 
+  dplyr::select(one_of(c('2','14','11','18','8','6'))) %>% 
+  rownames_to_column("genes") %>%
+  filter(genes %in% gs.down) %>% 
+  column_to_rownames("genes") %>% 
+  as.matrix() %>% 
+  pheatmap(scale = "row",breaks = seq(-1.5,1.5,by=0.03), clustering_distance_rows = "euclidean", 
+           border_color = NA, cutree_cols = 2, show_rownames = T, cluster_cols = F) -> hm
+
+hm
+
+pdf(here("Figs", "heatmap_hd_genes.pdf"), height = 5, width = 4)
+hm
+dev.off()
+```
+
+
+## Gene-set enrichment analysis
+
+We can use the DE gene list to perform a gene-set enrichment analysis using the package `fgsea`. To validate our findings that hd-Tcm appear more effector-like compared to ld-Tcm we'll focus on immunity-related gene-set deposited on MsigDB. We can access these genesets using the `msigdbr` package.
+
+Immunity related gene-sets are in category C7. 
+
+The fgsea function takes a named list of pathways as input, so we'll convert the msigdbr output as such.
+
+```{r get_pathways}
+pathways <- as.data.frame(msigdbr(species = "Mus musculus", category = "C7"))
+
+colnames(pathways)
+
+pathways %>% 
+  filter(grepl("KAECH|GOLDRATH", gs_name)) -> pathways
+
+pathways <- split(pathways$gene_symbol, pathways$gs_name)
+
+str(pathways)
+```
+
+
+The second input for the `fgsea` function is a named numeric vector; names being genes and values being the values by which the gene-rank will be derived (fold-change in this case).
+
+We'll focus of genes that are P < 0.05.
+
+```{r prep_gsea}
+marks %>% 
+  filter(p_val < 0.05) %>%  
+  dplyr::select(genes, avg_log2FC) %>% 
+  deframe %>% 
+  sort(decreasing = T) -> stats
+
+head(stats, 25)
+```
+
+Used the fgsea function to calculate gene-set enrichment. The minSize argument sets the minimal amount of genes that should be present in the dataset for the geneset to be included in the analysis.
+
+```{r gsea}
+fgseaRes <- as_tibble(fgsea(pathways=pathways, stats=stats, minSize = 12 ))
+
+fgseaRes
+```
+
+We specifically focused on the gene-sets deposited by Kaech and Goldrath, as these are most relevant to our question. 
+
+Also edited the names of the pathways a bit to make them a bit nicer in the plot. And reorder based on Normalized Enrichment Score.
+
+First write out the data.
+
+```{r filter_results}
+fgseaRes %>% 
+  filter(padj < 0.05)  %>% 
+  filter(grepl("KAECH|GOLDRATH", pathway)) %>% 
+  write_tsv(here("Output", "Fig_4e.tsv"))
+
+fgseaRes %>% 
+  filter(pval < 0.05)  %>% 
+  mutate(pathway = gsub("GOLDRATH", "GR", pathway),
+         pathway = gsub("KAECH", "KA", pathway),
+         pathway = gsub("_CD8_TCELL", "", pathway),
+         pathway = gsub("_", " ", pathway),
+         pathway = str_to_lower(pathway)) %>% 
+  mutate(pathway = fct_reorder(as.factor(pathway), NES)) -> to.plot
+
+to.plot
+```
+
+
+And plot the results:
+
+
+```{r gsea_plot, fig.asp=.8}
+ggplot(to.plot, aes(x = NES, y = pathway))+
+  geom_point(aes(size = size, color  = padj))+
+  grids(axis = "y", linetype = "dashed")+
+  geom_vline(xintercept = 0, color = "blue", linetype = "dotted")
+
+ggsave(filename = here("Figs", "Pathways_C7.pdf"),device =  "pdf", height = 4, width = 5)
+```
+
+Make example plot Goldrath pathway. fgsea has a nice build in function for this called `plotEnrichment`. 
+
+```{r goldrath_plot}
+pw <-  "GOLDRATH_NAIVE_VS_MEMORY_CD8_TCELL_DN"
+
+nes <- fgseaRes %>%  filter(pathway == pw) %>%  pull(NES) %>% round(digits = 2)
+
+plotEnrichment(pathway = pathways[[pw]], stats)+
+  ggtitle(pw)+
+  geom_text(aes(label = paste0(c("NES = ", as.character(nes)), collapse = ""), x = Inf, y = Inf  ), vjust = "inward", hjust = "inward")
+
+ggsave(filename = here("Figs", "GSEA_GOLDRATH_EFF.pdf") , device = "pdf", width = 5, height = 3 ,useDingbats = F)
+```
+
+Make example plot Kaech pathway. fgsea has a nice build in function for this. 
+
+```{r kaech_plot}
+pw <-  "KAECH_NAIVE_VS_DAY8_EFF_CD8_TCELL_DN"
+
+nes <- fgseaRes %>%  filter(pathway == pw) %>%  pull(NES) %>% round(digits = 2)
+
+plotEnrichment(pathway = pathways[[pw]], stats)+
+  ggtitle(pw)+
+  geom_text(aes(label = paste0(c("NES = ", as.character(nes)), collapse = ""), x = Inf, y = Inf  ), vjust = "inward", hjust = "inward")
+
+ggsave(filename = here("Figs", "GSEA_KAECH_EFF.pdf") , device = "pdf", width = 5, height = 3 ,useDingbats = F)
+```
+
+
+# Quiescence of ld-Tcm
+
+As ld-Tcm have a low division history, we hypothesized that these cells may have a transcriptome that reflects a quiescent state. Below some analysis we included to test this.
+
+## GSEA on hallmark sigs
+
+We first checked our DE gene-list for enrichment for specific Hallmark gene-set. Analysis will be similar to the one performed above. 
+First get the pathways and convert to named list
+
+```{r get_hallmark}
+pathways <- as.data.frame(msigdbr(species = "Mus musculus", category = "H"))
+
+colnames(pathways)
+
+pathways <- split(pathways$gene_symbol, pathways$gs_name)
+str(pathways)
+```
+
+
+The second input for the fgsea function is a named numeric vector; names being genes and values being the values by which the gene-rank will be derived (fold-change in this case).
+
+We'll focus of genes that are P < 0.05.
+
+```{r prep_gseaH}
+marks %>% 
+  filter(p_val < 0.05) %>%  
+  dplyr::select(genes, avg_log2FC) %>% 
+  deframe %>% 
+  sort(decreasing = T) -> stats
+
+head(stats, 25)
+```
+
+Used the fgsea function to calculate gene-set enrichment. The minSize argument sets the minimal amount of genes that should be present in the dataset for the geneset to be included in the analysis.
+
+```{r gseaH}
+fgseaRes <- as_tibble(fgseaMultilevel(pathways=pathways, stats=stats, minSize = 10 ))
+
+fgseaRes
+
+write_tsv(fgseaRes, here("Output", "Ext_Dat_Fig_4g.tsv"))
+```
+
+
+Edited the names of the pathways a bit to make them a bit nicer in the plot. And reorder based on Normalized Enrichment Score.
+
+```{r filter_resultsH}
+fgseaRes %>% 
+  filter(padj < 0.05)  %>% 
+  mutate(pathway = gsub("HALLMARK", "", pathway))%>% 
+  mutate(pathway = gsub("_", " ", pathway)) %>%
+  mutate(pathway = str_to_lower(pathway)) %>% 
+  mutate(pathway = fct_reorder(as.factor(pathway), NES))  -> to.plot
+
+to.plot
+```
+
+
+And plot the results:
+
+
+```{r gsea_plotH, fig.asp=.7}
+ggplot(to.plot, aes(x = NES, y = pathway))+
+  geom_point(aes(size = size, color  = padj))+
+  grids(axis = "y", linetype = "dashed")+
+  geom_vline(xintercept = 0, color = "blue", linetype = "dotted")
+
+ggsave(filename = here("Figs", "Pathways_H.pdf"),device =  "pdf", height = 4, width = 5)
+```
+
+
+## Quiescence scores
+
+From the above results it seems there are a couple pathways involved in cellular proliferation down-regulated in ld-Tcm. We hypothesized that this population is quiescent, to further validate this from the scRNAseq data we made use of a signature derived from quiescent stem cells. 
+
+The signature consists of genes negatively or positively associated with stem cell quiescence. Lets read in both.
+
+
+```{r import_Qsig}
+( gs.neg <- read_lines(here("Data", "Quiescence_neg_sig.txt")) )
+
+( gs.pos <- read_lines(here("Data", "Quiescence_pos_sig.txt")) )
+```
+
+Next calculate a positive score and a negative score for quiescence, using gene-enrichment values from the lfp object. 
+
+```{r pos_neg_scores}
+# Calculate score positive gene-set
+lfp %>% 
+  as.data.frame %>% 
+  rownames_to_column("genes") %>% 
+  filter(genes %in% gs.pos) %>% 
+  dplyr::select(-genes) %>% 
+  colSums() -> pos.score
+
+pos.score
+
+# Calculate score negative gene-set
+lfp %>% 
+  as.data.frame %>% 
+  rownames_to_column("genes") %>% 
+  filter(genes %in% gs.neg) %>% 
+  dplyr::select(-genes) %>% 
+  colSums() -> neg.score
+
+neg.score
+```
+
+We can then combine these scores into a tibble and add the transcriptional cluster identities.
+
+In addition, add a combined score (i.e. summed score), and drop the Tem cells (we'll focus on the Tcm clusters).
+
+```{r prep_wf_plot}
+left_join(
+  enframe(pos.score, name = "MCs", value = "Pos.Score"),
+  enframe(neg.score, name = "MCs", value = "Neg.Score")) %>% 
+  mutate(cluster = factor(fct_collapse(.$MCs,
+                                       eff = c('23','15','22','8','6','10','4','5','7','18'),
+                                       mult = c('9','1','12','13','14','16','11','2','3'),
+                                       TEM = c('21','19','17','20')), 
+                          levels = c("TEM", "eff", "mult")  ),
+         Qscore = pos.score - neg.score) %>% 
+  filter(!(cluster == "TEM")) %>% 
+  mutate(cluster = fct_drop(cluster)) -> to.plot
+
+to.plot
+
+write_tsv(to.plot, here("Output", "Fig_4h.tsv"))
+```
+
+Now we can make some plots. First make a waterfall plot.
+
+```{r Q_wf_plot}
+p1 <- ggplot(to.plot, aes(x = fct_reorder(MCs, Qscore), y = Qscore, fill = cluster ))+
+  geom_bar(stat = "identity", color = "black", size = .4)+
+  geom_hline(yintercept = 0)+
+  scale_fill_manual(values = c("#4575B4" ,"#8AB8D7"))+
+  scale_y_continuous(limits = c(-2, 1.7))
+
+p1
+```
+
+
+We'll also add a boxplot, lets calculate statistics to add in the end. Used a regular t test.
+
+```{r Q_statistics}
+# Calculate statistics for boxplot
+to.plot %>% 
+  t_test( Qscore ~ cluster) %>% 
+  add_xy_position(x = "cluster") -> stat.test
+```
+
+And make the boxplot. Used `ggpubr::stat_pvalue_manual` to add the statistics.
+
+```{r Q_bx_plot}
+p2 <- ggplot(to.plot, aes(x = cluster, y = Qscore, color = cluster ))+
+  geom_boxplot(outlier.shape = NA, size = .8)+
+  scale_color_manual(values = c("#4575B4" ,"#8AB8D7"))+
+  geom_jitter(color = "black", width = .2)+
+  stat_pvalue_manual(data = stat.test, label = "p", label.size = 4, hide.ns = T, tip.length = 0.02)+
+  scale_y_continuous(limits = c(-2, 1.7))
+
+p2
+```
+
+
+And finally; plotted together using `ggpubr::ggarrange`.
+
+```{r Q_final plot, fig.width=10}
+ggarrange(plotlist = list(p1,p2), ncol =  2, widths = c(2.2,1))
+
+ggsave(here("Figs", "Barchart_Qscore.pdf"), device = "pdf", width = 8, height = 4)
+```
+

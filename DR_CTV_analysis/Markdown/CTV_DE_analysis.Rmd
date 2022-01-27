@@ -77,6 +77,7 @@ marks.tags %>%
 marks.tags
 
 write_tsv(marks.tags, here("Output", "DE_results_CTV.tsv"))
+write_tsv(marks.tags, here("Output", "Ext_Dat_Fig_6a.tsv"))
 ```
 
 ### Volcano plot
@@ -158,6 +159,8 @@ And now we can perform the GSEA analysis.
 fgseaRes <- fgsea(pathways=pathways, stats=stats, minSize = 10, nPermSimple = 50000) %>% as_tibble
 
 fgseaRes
+
+write_tsv(fgseaRes, here("Output", "Fig_5b.tsv"))
 ```
 
 ### Plot top/bottom pathways

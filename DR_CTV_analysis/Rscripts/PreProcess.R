@@ -57,3 +57,35 @@ rm(hto.dist.mtx)
 # Save Seurat object
 saveRDS(object = seurat_object, file = "./Analysis_CTV_experiment/misc_data/seurat_object_CTVexp.rds")
 
+
+
+###### 
+
+seurat_object <- read_rds("./Analysis_CTV_experiment/misc_data/seurat_object_CTVexp.rds")
+library(metacell)
+
+scdb_init("/DATA/users/k.bresser/DivisionRecorder_scRNAseq_full/Project_CTV/Data/", force_reinit = T)
+
+mc <- scdb_mc("DivRecCTV_MC")
+
+seurat_object@meta.data %>% 
+  rownames_to_column("cellcode") %>% 
+  as_tibble() %>% 
+  select(cellcode, hash.ID, contains("HTO"), contains("_RNA")) -> metadata
+
+mc@mc %>% 
+  enframe("cellcode", "MetaCell") %>% 
+  mutate(MetaCell = factor(MetaCell)) %>% 
+  full_join(metadata) %>% 
+  mutate(ID = fct_recode(hash.ID, 
+                              LO_GFP = "MSC15-1", 
+                              LO_Ai9 = "MSC15-2", 
+                              HI_GFP = "MSC15-3",
+                              HI_Ai9 = "MSC15-4")) %>%
+  mutate(ID = as.character(ID)) %>% 
+  mutate(`CTV intensity`= case_when(str_detect(ID, "LO") ~ "low",
+                                    str_detect(ID, "HI") ~ "high"),
+         `mouse strain`= case_when(str_detect(ID, "Ai") ~ "Ai9;OT-I",
+                                    str_detect(ID, "GFP") ~ "GFP;OT-I")) -> metadata.full
+
+write_tsv(metadata.full, "./Project_CTV/Output/Metadata_table_CTV.tsv")

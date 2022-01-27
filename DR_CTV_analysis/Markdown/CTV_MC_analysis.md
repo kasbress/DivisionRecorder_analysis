@@ -5,6 +5,8 @@ Kaspar Bresser
 
 -   [Visualize MetaCells](#visualize-metacells)
 -   [Plot MetaCell enrichment](#plot-metacell-enrichment)
+    -   [Experiment summary](#experiment-summary)
+    -   [Enrichment plot](#enrichment-plot)
 -   [Plot top/bottom genes](#plot-topbottom-genes)
 
 In the DivisionRecorder manuscript we used a CTV based approach to sort
@@ -13,7 +15,7 @@ had obtained duplicate cell pools. Each was hash-tagged separately, then
 pooled, and subsequently single-cell sequenced using the 10x approach.
 Below the analysis pipe-line we used for the MetaCell-based analysis.
 
-MetaCells were generated using the MetaCell\_run.R script in the Scripts
+MetaCells were generated using the MetaCell_run.R script in the Scripts
 folder.
 
 First load the packages, and files that we’ll be using.
@@ -34,7 +36,7 @@ mc2d <- scdb_mc2d("DivRecCTV_MC")
 clean.mat = scdb_mat("DivRecCTV_clean")
 ```
 
-# Visualize MetaCells
+## Visualize MetaCells
 
 Start off with plotting the single cells, and their MetaCell identity on
 a 2D plane. The x and y coordinates are stored in the mc2d object.
@@ -67,12 +69,12 @@ And join with MetaCell identities, these are stored in the `mc` object.
 mc2d@sc_x %>% 
   enframe("cellcode", "MC_x") %>% 
   full_join(enframe(mc2d@sc_y, "cellcode", "MC_y")) %>% 
-  left_join(enframe(mc@mc, "cellcode", "MetaCell")) -> coords
+  inner_join(enframe(mc@mc, "cellcode", "MetaCell")) -> coords
 
 coords
 ```
 
-    ## # A tibble: 9,702 x 4
+    ## # A tibble: 9,701 × 4
     ##    cellcode            MC_x  MC_y MetaCell
     ##    <chr>              <dbl> <dbl>    <int>
     ##  1 AAACCCAAGACCATTC-1  84.9  78.7        3
@@ -85,7 +87,7 @@ coords
     ##  8 AAACCCATCGATACGT-1 109.  171.        18
     ##  9 AAACGAAAGACCACGA-1 184.  283.        11
     ## 10 AAACGAAAGCTGACTT-1 248.  132.         5
-    ## # … with 9,692 more rows
+    ## # … with 9,691 more rows
 
 Make plot the 2d project.
 
@@ -97,17 +99,13 @@ coords %>%
     theme_classic()
 ```
 
-    ## Warning: Removed 1 rows containing missing values (geom_point).
-
 <img src="CTV_MC_analysis_files/figure-gfm/plot_2d-1.png" style="display: block; margin: auto;" />
 
 ``` r
 ggsave(here("Figs", "2d_projection_CTV.pdf"), device = "pdf", width = 7,height = 5)
 ```
 
-    ## Warning: Removed 1 rows containing missing values (geom_point).
-
-# Plot MetaCell enrichment
+## Plot MetaCell enrichment
 
 Next, make visualization to check if less or more divided cells are
 enriched in certain MetaCells. The sample hashtags correspond to cells
@@ -130,7 +128,7 @@ clean.mat@cell_metadata %>%
 hashtags
 ```
 
-    ## # A tibble: 13,064 x 2
+    ## # A tibble: 13,064 × 2
     ##    cellcode           hash.ID
     ##    <chr>              <fct>  
     ##  1 AAACCCAAGACCATTC-1 HI_Ai9 
@@ -151,27 +149,69 @@ object.
 ``` r
 mc@mc %>% 
   enframe("cellcode", "MetaCell") %>% 
+  mutate(MetaCell = as.factor(MetaCell)) %>% 
   left_join(hashtags) -> mc.hashtag.table
 
 mc.hashtag.table
 ```
 
-    ## # A tibble: 9,702 x 3
+    ## # A tibble: 9,702 × 3
     ##    cellcode           MetaCell hash.ID
-    ##    <chr>                 <int> <fct>  
-    ##  1 AAACCCAAGACCATTC-1        3 HI_Ai9 
-    ##  2 AAACCCAAGATTCGCT-1        6 LO_Ai9 
-    ##  3 AAACCCACAACCACAT-1       18 LO_Ai9 
-    ##  4 AAACCCACAGGCTATT-1        7 HI_Ai9 
-    ##  5 AAACCCAGTCGAGTGA-1        5 HI_GFP 
-    ##  6 AAACCCATCCACGAAT-1        5 HI_GFP 
-    ##  7 AAACCCATCCATAAGC-1       15 HI_GFP 
-    ##  8 AAACCCATCGATACGT-1       18 HI_Ai9 
-    ##  9 AAACGAAAGACCACGA-1       11 HI_GFP 
-    ## 10 AAACGAAAGCTGACTT-1        5 HI_Ai9 
+    ##    <chr>              <fct>    <fct>  
+    ##  1 AAACCCAAGACCATTC-1 3        HI_Ai9 
+    ##  2 AAACCCAAGATTCGCT-1 6        LO_Ai9 
+    ##  3 AAACCCACAACCACAT-1 18       LO_Ai9 
+    ##  4 AAACCCACAGGCTATT-1 7        HI_Ai9 
+    ##  5 AAACCCAGTCGAGTGA-1 5        HI_GFP 
+    ##  6 AAACCCATCCACGAAT-1 5        HI_GFP 
+    ##  7 AAACCCATCCATAAGC-1 15       HI_GFP 
+    ##  8 AAACCCATCGATACGT-1 18       HI_Ai9 
+    ##  9 AAACGAAAGACCACGA-1 11       HI_GFP 
+    ## 10 AAACGAAAGCTGACTT-1 5        HI_Ai9 
     ## # … with 9,692 more rows
 
-Now count the number of cells per MetaCell-hashtag combination, and
+### Experiment summary
+
+Quickly use the mc.hashtag.table to plot the experiment summary plots.
+
+``` r
+mc.hashtag.table %>% 
+  ggplot(aes(MetaCell))+
+  geom_bar( fill = "lightgrey", color = "black" )+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+<img src="CTV_MC_analysis_files/figure-gfm/summary-1.png" style="display: block; margin: auto;" />
+
+``` r
+mc.hashtag.table %>% 
+  ggplot(aes(hash.ID))+
+  geom_bar( fill = "lightgrey", color = "black" )+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+<img src="CTV_MC_analysis_files/figure-gfm/summary-2.png" style="display: block; margin: auto;" />
+
+``` r
+mc.hashtag.table %>% 
+  ggplot(aes(MetaCell, fill = hash.ID ))+
+  geom_bar(position = "fill", color = "black" )+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+<img src="CTV_MC_analysis_files/figure-gfm/summary-3.png" style="display: block; margin: auto;" />
+
+``` r
+mc.hashtag.table %>% 
+  count(hash.ID, MetaCell) %>% 
+  write_tsv(here("Output", "Ext_Dat_Fig_6bcd.tsv"))
+```
+
+### Enrichment plot
+
+Move on to plot the enrichment of Hi/Lo cells within each MetaCell
+
+Count the number of cells per MetaCell-hashtag combination, and
 normalize within hashtags.
 
 ``` r
@@ -183,20 +223,20 @@ mc.hashtag.table %>%
 mc.hashtag.counts
 ```
 
-    ## # A tibble: 84 x 4
+    ## # A tibble: 84 × 4
     ## # Groups:   hash.ID [4]
     ##    MetaCell hash.ID     n normalized.count
-    ##       <int> <fct>   <int>            <dbl>
-    ##  1        1 LO_GFP     94             42.1
-    ##  2        1 LO_Ai9     73             33.4
-    ##  3        1 HI_GFP    105             35.7
-    ##  4        1 HI_Ai9    109             46.6
-    ##  5        2 LO_GFP     75             33.6
-    ##  6        2 LO_Ai9     80             36.6
-    ##  7        2 HI_GFP    257             87.3
-    ##  8        2 HI_Ai9    211             90.2
-    ##  9        3 LO_GFP    130             58.2
-    ## 10        3 LO_Ai9    125             57.2
+    ##    <fct>    <fct>   <int>            <dbl>
+    ##  1 1        LO_GFP     94             42.1
+    ##  2 1        LO_Ai9     73             33.4
+    ##  3 1        HI_GFP    105             35.7
+    ##  4 1        HI_Ai9    109             46.6
+    ##  5 2        LO_GFP     75             33.6
+    ##  6 2        LO_Ai9     80             36.6
+    ##  7 2        HI_GFP    257             87.3
+    ##  8 2        HI_Ai9    211             90.2
+    ##  9 3        LO_GFP    130             58.2
+    ## 10 3        LO_Ai9    125             57.2
     ## # … with 74 more rows
 
 Next `separate` the hash.ID label into separate columns, one for CTV
@@ -214,21 +254,25 @@ mc.hashtag.counts %>%
 ratio.HiLo
 ```
 
-    ## # A tibble: 42 x 3
+    ## # A tibble: 42 × 3
     ## # Groups:   MetaCell [21]
     ##    MetaCell origin ratio
-    ##       <int> <chr>  <dbl>
-    ##  1        1 Ai9    0.717
-    ##  2        1 GFP    1.18 
-    ##  3        2 Ai9    0.406
-    ##  4        2 GFP    0.384
-    ##  5        3 Ai9    0.998
-    ##  6        3 GFP    1.03 
-    ##  7        4 Ai9    0.866
-    ##  8        4 GFP    0.851
-    ##  9        5 Ai9    0.233
-    ## 10        5 GFP    0.204
+    ##    <fct>    <chr>  <dbl>
+    ##  1 1        Ai9    0.717
+    ##  2 1        GFP    1.18 
+    ##  3 2        Ai9    0.406
+    ##  4 2        GFP    0.384
+    ##  5 3        Ai9    0.998
+    ##  6 3        GFP    1.03 
+    ##  7 4        Ai9    0.866
+    ##  8 4        GFP    0.851
+    ##  9 5        Ai9    0.233
+    ## 10 5        GFP    0.204
     ## # … with 32 more rows
+
+``` r
+write_tsv(ratio.HiLo, here("Output", "Fig_5d.tsv"))
+```
 
 Plot the data, take the median of the two replicative cell pools to plot
 bars, and plot the individual measurements as dots.
@@ -251,7 +295,7 @@ ggsave(filename = here("Figs", "Hashtags_per_MC_ratio.pdf"), device = "pdf",
        width = 5, height = 4, useDingbats=FALSE )
 ```
 
-# Plot top/bottom genes
+## Plot top/bottom genes
 
 Having found MetaCells that are depleted and enriched for
 CTV<sup>LO</sup> or CTV<sup>HI</sup> cells, we can next look at marker
@@ -272,7 +316,7 @@ mc@mc_fp %>%
 lfp
 ```
 
-    ## # A tibble: 12,386 x 5
+    ## # A tibble: 12,386 × 5
     ##    genes              `2`      `5`     `19`     `20`
     ##    <chr>            <dbl>    <dbl>    <dbl>    <dbl>
     ##  1 Mrpl15         0       -0.0474  -0.0499  -0.0809 
@@ -301,7 +345,7 @@ lfp %>%
 lfp.long
 ```
 
-    ## # A tibble: 1,492 x 3
+    ## # A tibble: 1,492 × 3
     ##    genes  MetaCell      lfp
     ##    <chr>  <chr>       <dbl>
     ##  1 Mybl1  MC2       0.00499
@@ -331,7 +375,7 @@ lfp.long %>%
 to.plot
 ```
 
-    ## # A tibble: 48 x 3
+    ## # A tibble: 48 × 3
     ##    genes         MetaCell    lfp
     ##    <fct>         <chr>     <dbl>
     ##  1 Bcl2___MC5    MC5      -0.272
@@ -345,6 +389,10 @@ to.plot
     ##  9 S100a6___MC5  MC5       0.872
     ## 10 S100a6___MC19 MC19     -1.14 
     ## # … with 38 more rows
+
+``` r
+write_tsv(to.plot, here("Output", "Fig_5e.tsv"))
+```
 
 And to make the plot, make 1 waterfall plot for each MetaCell. Make sure
 to use `tidytext::scale_x_reordered` to trim the axis labels.

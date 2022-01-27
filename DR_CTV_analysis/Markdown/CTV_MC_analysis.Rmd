@@ -49,7 +49,7 @@ clean.mat = scdb_mat("DivRecCTV_clean")
 ```
 
 
-# Visualize MetaCells
+## Visualize MetaCells
 
 Start off with plotting the single cells, and their MetaCell identity on a 2D plane. The x and y coordinates are stored in the mc2d object.
 
@@ -65,7 +65,7 @@ And join with MetaCell identities, these are stored in the `mc` object.
 mc2d@sc_x %>% 
   enframe("cellcode", "MC_x") %>% 
   full_join(enframe(mc2d@sc_y, "cellcode", "MC_y")) %>% 
-  left_join(enframe(mc@mc, "cellcode", "MetaCell")) -> coords
+  inner_join(enframe(mc@mc, "cellcode", "MetaCell")) -> coords
 
 coords
 ```
@@ -83,7 +83,7 @@ ggsave(here("Figs", "2d_projection_CTV.pdf"), device = "pdf", width = 7,height =
 ```
 
 
-# Plot MetaCell enrichment
+## Plot MetaCell enrichment
 
 Next, make visualization to check if less or more divided cells are enriched in certain MetaCells. The sample hashtags correspond to cells that were CTV^HI^ or CTV^LO^. Extract the hashtag information from the metadata of the `mat` object and recode the identifiers to correspond to CTV^HI^ or CTV^LO^ populations. The replicates correspond to GFP^-^ (i.e. Ai9 cells) and GFP^+^ cells.
 
@@ -104,17 +104,46 @@ hashtags
 Now join that table with the MetaCell identities, stored in the `mc` object.
 
 
-
 ```{r join_MC_hastags}
 mc@mc %>% 
   enframe("cellcode", "MetaCell") %>% 
+  mutate(MetaCell = as.factor(MetaCell)) %>% 
   left_join(hashtags) -> mc.hashtag.table
 
 mc.hashtag.table
 ```
 
+### Experiment summary
 
-Now count the number of cells per MetaCell-hashtag combination, and normalize within hashtags. 
+Quickly use the mc.hashtag.table to plot the experiment summary plots. 
+
+```{r summary, fig.asp=.5}
+mc.hashtag.table %>% 
+  ggplot(aes(MetaCell))+
+  geom_bar( fill = "lightgrey", color = "black" )+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+mc.hashtag.table %>% 
+  ggplot(aes(hash.ID))+
+  geom_bar( fill = "lightgrey", color = "black" )+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+mc.hashtag.table %>% 
+  ggplot(aes(MetaCell, fill = hash.ID ))+
+  geom_bar(position = "fill", color = "black" )+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+mc.hashtag.table %>% 
+  count(hash.ID, MetaCell) %>% 
+  write_tsv(here("Output", "Ext_Dat_Fig_6bcd.tsv"))
+```
+
+
+### Enrichment plot
+
+Move on to plot the enrichment of Hi/Lo cells within each MetaCell
+
+Count the number of cells per MetaCell-hashtag combination, and normalize within hashtags. 
 
 
 ```{r get_counts}
@@ -125,6 +154,9 @@ mc.hashtag.table %>%
 
 mc.hashtag.counts
 ```
+
+
+
 
 
 Next `separate` the hash.ID label into separate columns, one for CTV intensity and one for cell origin.
@@ -139,6 +171,8 @@ mc.hashtag.counts %>%
   summarize(ratio = normalized.count[CTVint == "LO"] / normalized.count[CTVint == "HI"]) -> ratio.HiLo 
 
 ratio.HiLo
+
+write_tsv(ratio.HiLo, here("Output", "Fig_5d.tsv"))
 ```
 
 Plot the data, take the median of the two replicative cell pools to plot bars, and plot the individual measurements as dots. 
@@ -159,7 +193,7 @@ ggsave(filename = here("Figs", "Hashtags_per_MC_ratio.pdf"), device = "pdf",
 
 ```
 
-# Plot top/bottom genes 
+## Plot top/bottom genes 
 
 Having found MetaCells that are depleted and enriched for CTV^LO^ or CTV^HI^ cells, we can next look at marker genes of these MetaCells. 
 
@@ -204,6 +238,8 @@ lfp.long %>%
   mutate(genes = reorder_within(genes, lfp, MetaCell) ) -> to.plot
 
 to.plot
+
+write_tsv(to.plot, here("Output", "Fig_5e.tsv"))
 ```
 
 
